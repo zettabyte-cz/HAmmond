@@ -176,3 +176,37 @@ def test_stream_waits_for_the_ha_connection(
     assert slept == [5, 5]
     assert Fake.invalidated == 2
     assert heartbeat.exists()  # healthy while waiting
+
+
+def test_catalog_on_new_installation_syncs_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No silver before the first hourly ingest: the catalog runs the sync first."""
+    calls: list[str] = []
+    silver = iter([False, True])
+    monkeypatch.setattr(tasks, "_has_silver_entities", lambda: next(silver))
+    monkeypatch.setattr(tasks, "sync_registries", lambda: calls.append("registries"))
+    monkeypatch.setattr(tasks, "sync_statistics", lambda s=None: calls.append("statistics"))
+    monkeypatch.setattr(tasks, "run_transform", lambda: calls.append("transform"))
+
+    class Profile:
+        entities, drift = 3, 0
+
+    class Lake:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(tasks, "open_lake", Lake)
+    monkeypatch.setattr(tasks.catalog, "profile", lambda con, window: Profile())
+    assert tasks.profile_catalog(IngestSettings()) == {"entities": 3, "drift": 0}
+    assert calls == ["registries", "statistics", "transform"]
+
+
+def test_catalog_without_data_explains(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tasks, "_has_silver_entities", lambda: False)
+    for name in ("sync_registries", "run_transform"):
+        monkeypatch.setattr(tasks, name, lambda: None)
+    monkeypatch.setattr(tasks, "sync_statistics", lambda s=None: None)
+    with pytest.raises(RuntimeError, match="Home Assistant is connected"):
+        tasks.profile_catalog(IngestSettings())

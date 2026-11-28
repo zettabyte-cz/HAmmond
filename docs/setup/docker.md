@@ -65,14 +65,16 @@ gives the same directory.
 
 `docker compose up -d` returns once the admin GUI is up (it waits for the databases,
 which takes a minute or two on the first start); the second command then prints the
-one-time setup link for step 2.
+one-time setup link for step 2. `docker compose up -d` alone does not print it: run
+`docker compose exec admin xomtra-admin setup-link` afterwards.
 
 On the first start the service `secrets-init`:
 
 - generates every internal password and key into the Docker volume `secrets` (each
   service gets a file with only the values it needs, readable only by its user);
-- finds this machine's address in the LAN; the server is then reachable at
-  `https://<that address>/` (the local access mode, LAN only).
+- finds this machine's address in the LAN; the admin GUI is then at
+  `https://<that address>/admin/` (the local access mode, LAN only). Open it the first
+  time through the setup link (step 2).
 
 Later starts keep everything; a new version only adds keys it introduces.
 

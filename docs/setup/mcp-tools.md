@@ -29,7 +29,11 @@ changes against the previous profile to `catalog.drift`: new and removed entitie
 changed unit, device class, state class, area, name or kind, an entity that stopped or
 resumed reporting, and a shift of the recent median outside the usual range.
 
-Run it once right after deploying (the first run records no drift):
+Run it once right after deploying (the first run records no drift). On a new
+installation it first runs the ingest sync (`xomtra-ingest sync`: registries,
+statistics, SQLMesh `bronze → silver`), because before the first hourly ingest there is
+no silver to profile. Until the first profile the MCP tools `search_catalog`,
+`get_findings` and `describe_entity` say that the catalog is not built yet.
 
 ```sh
 sudo docker compose exec dagster-daemon xomtra-ingest catalog

@@ -260,8 +260,15 @@ async def test_empty_lake(tmp_path: Path) -> None:
     try:
         srv = server(empty, ADMIN)
         assert (await call(srv, "list_views"))["views"] == []
-        with pytest.raises(ToolError, match="catalog_entity"):
-            await call(srv, "search_catalog")
+        # A new installation: no catalog yet, the tools say so instead of a DuckDB error.
+        found = await call(srv, "search_catalog")
+        assert found["entities"] == []
+        assert "not built yet" in found["note"]
+        findings = await call(srv, "get_findings")
+        assert findings["findings"] == []
+        assert "not built yet" in findings["note"]
+        with pytest.raises(ToolError, match="not built yet"):
+            await call(srv, "describe_entity", entity_id="sensor.x")
     finally:
         empty.close()
 

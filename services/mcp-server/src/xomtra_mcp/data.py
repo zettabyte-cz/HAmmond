@@ -148,6 +148,16 @@ _USER_ERRORS = (
 )
 
 
+# A new installation builds its catalog with the first run of the daily catalog job.
+CATALOG_NOT_READY = (
+    "The catalog is not built yet: a new installation builds it with the daily catalog "
+    "job (04:15 in the installation's time zone), after the history from Home Assistant "
+    "has loaded. Until then the entities are not searchable here; the administrator can "
+    "build it now with `xomtra-ingest catalog` in the container dagster-daemon. Raw "
+    "data may already be in the views of list_views."
+)
+
+
 class QueryFailed(RuntimeError):  # noqa: N818 - message is shown to the caller
     """A query failed; the message is safe to show to the caller."""
 
@@ -312,6 +322,16 @@ class DataAccess:
         data = cur.fetchmany(limit) if limit is not None else cur.fetchall()
         return [{c: jsonable(v) for c, v in zip(cols, r, strict=True)} for r in data]
 
+    @staticmethod
+    def _has_view(cur: duckdb.DuckDBPyConnection, name: str) -> bool:
+        """Whether :meth:`_cursor` created the view (its lake table exists)."""
+        return (
+            cur.execute(
+                "SELECT 1 FROM duckdb_views() WHERE temporary AND view_name = ?", [name]
+            ).fetchone()
+            is not None
+        )
+
     # ---- tools ---------------------------------------------------------------------
 
     def list_views(self, access: Access) -> list[Row]:
@@ -368,6 +388,13 @@ class DataAccess:
             f"ORDER BY changes_per_day DESC NULLS LAST, entity_id LIMIT {limit + 1}"
         )
         with self._cursor(access) as cur:
+            if not self._has_view(cur, "catalog_entity"):
+                return {
+                    "entities": [],
+                    "row_count": 0,
+                    "truncated": False,
+                    "note": CATALOG_NOT_READY,
+                }
             rows = self._timed(cur, lambda: self._rows(cur.execute(sql, params)))
         return {
             "entities": rows[:limit],
@@ -378,6 +405,8 @@ class DataAccess:
     def describe_entity(self, access: Access, entity_id: str) -> Row:
         access.require_entity(entity_id)
         with self._cursor(access) as cur:
+            if not self._has_view(cur, "catalog_entity"):
+                raise QueryFailed(CATALOG_NOT_READY)
 
             def run() -> Row:
                 cur.execute("SELECT * FROM catalog_entity WHERE entity_id = ?", [entity_id])
@@ -527,7 +556,9 @@ class DataAccess:
 
     # ---- findings (ADR 047, 048) ---------------------------------------------------
 
-    def _finding_select(self, access: Access, source: str, extra: str = "") -> str:
+    def _finding_select(
+        self, access: Access, source: str, extra: str = "", *, names: bool = True
+    ) -> str:
         """Finding columns with entity names when the role may read the catalog."""
         cols = extra + (
             "f.finding_type, f.window_days, f.rank, f.entity_id, f.metric, f.state, "
@@ -538,7 +569,7 @@ class DataAccess:
             "f.related_group, f.period_start, f.period_end, f.first_detected_at, "
             "f.detected_at, f.finding_id"
         )
-        if not access.can_view("catalog_entity"):
+        if not (names and access.can_view("catalog_entity")):
             return f"SELECT {cols} FROM {source} AS f"
         return (
             f"SELECT {cols}, e.name AS entity_name, e.area_name AS entity_area, "
@@ -594,11 +625,25 @@ class DataAccess:
             "ELSE 2 END, window_days, rank"
         )
         show = "TRUE" if include_flagged else f"NOT ({flagged})"
-        sql = (
-            f"SELECT * FROM ({self._finding_select(access, 'catalog_finding')}) AS f "
-            f"WHERE {' AND '.join(where)} AND {show} {order} LIMIT {limit + 1}"
-        )
         with self._cursor(access) as cur:
+            if not self._has_view(cur, "catalog_finding"):
+                return {
+                    "findings": [],
+                    "row_count": 0,
+                    "truncated": False,
+                    "counts": {},
+                    "flagged_hidden": not include_flagged,
+                    "methods": [],
+                    "confidence": [],
+                    "note": CATALOG_NOT_READY,
+                }
+            select = self._finding_select(
+                access, "catalog_finding", names=self._has_view(cur, "catalog_entity")
+            )
+            sql = (
+                f"SELECT * FROM ({select}) AS f "
+                f"WHERE {' AND '.join(where)} AND {show} {order} LIMIT {limit + 1}"
+            )
 
             def run() -> Row:
                 counts = cur.execute(
@@ -692,7 +737,10 @@ class DataAccess:
                     )
                 previous = next((w for w in weeks if w < chosen), None)
                 select = self._finding_select(
-                    access, "catalog_finding_weekly", extra="f.week_start, "
+                    access,
+                    "catalog_finding_weekly",
+                    extra="f.week_start, ",
+                    names=self._has_view(cur, "catalog_entity"),
                 )
                 cur.execute(
                     f"SELECT * FROM ({select}) WHERE week_start IN (?, ?)", [chosen, previous]

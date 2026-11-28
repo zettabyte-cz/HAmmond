@@ -104,6 +104,11 @@ https://{$XOMTRA_LOCAL_HOST} {
 		}
 	}
 
+	# The bare address opens the admin GUI (it guards itself and ADMIN_CIDR above).
+	handle / {
+		redir /admin/ 302
+	}
+
 	handle {
 		import refuse 404 "Not found"
 	}
